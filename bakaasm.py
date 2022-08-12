@@ -24,6 +24,8 @@ class BakaASM:
       "footer": []
     }
     self.transformer = BakaASMTransformer()
+    
+    self._pre_blocks = ["macro", "if"]
   
   def use(self, what, _from="$"):
     if type(what) == list:
@@ -39,7 +41,7 @@ class BakaASM:
 
   def let(self, name, value, _type=None):
     if isinstance(value, str | bytes):
-      _bit = "u8" if tpl.isascii() else "u16"
+      _bit = "u8" if value.isascii() else "u16"
       self.sections["data"].append(f"{name} := db <{_bit}>{value!r}, {len(value)}")
     else:
       if _type is not None:
@@ -71,8 +73,19 @@ class BakaASM:
     self.instr.append(func.unwrap(func))
     return self 
 
-  def pre(self, instr):
-    self.instr.append("%" + instr)
+  def pre(self, *instr):
+    _Xindent=0
+    for _instr in instr:
+      if (_Xtok:=_instr.split()[0]) in self._pre_blocks:
+        _Xindent+=2
+        self.instr.append("%" + " "*(_Xindent-2) + _instr)
+      elif _Xtok=="else":
+        self.instr.append("%" + " "*(_Xindent-2) + _instr)
+      elif _Xtok.startswith("end"):
+        _Xindent-=2
+        self.instr.append("%" + " "*_Xindent + _instr)
+      else: 
+        self.instr.append("%" + " "*_Xindent + _instr)
     return self
 
   def defun(self, name, args=(), body=None):
@@ -89,8 +102,7 @@ class BakaASM:
         _Xargsdfv.append(f"{_Xarg[2] or 'nop!'!r}")
       _Xargsdfv=", ".join(_Xargsdfv)
       _Xargs=", ".join(_Xargs)
-      self.instr.append(f"({_Xargs}) = ({_Xargsdfv})")
-      self.instr.append(f"({_Xargs}) = any!(%*) ?: %1..{len(args)}")
+      self.instr.append(f"({_Xargs}) = (%*...) ?? ({_Xargsdfv})")
     if body is not None:
       for _instr in body.raw():
         self.instr.append(_instr)
@@ -191,7 +203,6 @@ class BakaASM:
         for _instr in block.raw():
           self.instr.append(_instr)
       else:
-        print (block [0])
         self.instr.append(f"%{'if' if i < 1 else 'elif'} {block[0][0] % block[0][1:-1]}")
         for _instr in block[1].raw():
           self.instr.append(_instr)
@@ -246,7 +257,7 @@ class BakaASM:
         _instr.append(f"\t\t{instr}")
       else:
         _instr.append(instr)
-    return "\n".join(_instr)
+    return self.transformer.transform(_instr)
   
   def raw(self):
     return self.header + self.instr + self.footer
@@ -268,18 +279,31 @@ class BakaASMTransformer:
               .replace("&", "and"))
    
   def transform(self, source):
-    _0 = self.dottags_to_header(source.splitlines())
+    _0 = self.dottags_to_header(source)
     _1 = self.usings_to_header(_0)
     _2 = self.remove_duplicate_dottags(_1)
     _3 = self.remove_duplicate_usings(_2)
     _4 = self.sort_usings(_3)
     _5 = self.sort_dottags(_4)
+    _6 = self.pre_to_header(_5)
     
-    _last = _5
+    _last = _6
     _source = "\n".join(_last)
     
     return _source
+  
+  def pre_to_header(self, source):
+    _instr = []
+    _pre = []
     
+    for instr in source:
+      if instr.startswith("%"):
+        _pre.append(instr)
+      else:
+        _instr.append(instr)
+    
+    return _pre + _instr
+  
   def usings_to_header(self, source):
     _instr = []
     _usings = []
@@ -377,19 +401,19 @@ class Expr:
 class EExpr:
   def __init__(self, *a):
     self.al=len(a)
-    if len(a)==2:
+    if self.al==2:
       self.arg1=a[1]
       self.op=a[0]
-    elif len(a)==3:
-      self.arg1=a[0]
+    elif self.al==3:
+      self.op=a[0]
+      self.arg1=a[1]
       self.arg2=a[2]
-      self.op=a[1]
 
   def __repr__(self):
     if self.al==2:
       return f"{self.op} {self.arg1}"
     elif self.al==3:
-      return f"{self.arg1} {self.op} {self.arg2}"
+      return f"({self.op} {self.arg1}, {self.arg2})"
   
   @staticmethod
   def unwrap(eexpr):
@@ -474,44 +498,3 @@ class Type:
   def __getattr__(self,a):
     if a in self.__slots__:
       return self.__dict__.get(a).lower()
-
-snippet = (BakaASM()
-  .use(["lua", "sol"])
-  .use("enumerate")
-  .let("L", Expr("sol::state"))
-  .call(Func("L:open_lib", (), (Expr("sol::lib::base"), Expr("sol::lib::package"))))
-  .let(Var("test_var"), 10)
-  ._do(
-    (([Var("i")], [0], [EExpr(BakaOp.Add, 1)],
-      BakaOp.Neq, Var("i"), Func("math:fac", (), (999,))),
-     (BakaASM()
-       .printf("%d left", Var("test_var"),))),
-    (([Var("cx")], [0], [EExpr(BakaOp.Add, 1)],
-      BakaOp.Neq, Var("cx"), Func("math:fac", (), (999,))),
-     (BakaASM()
-       .printf("%d манул", Var("test_var"), Ternary((Func("test_var:size"), EExpr(BakaOp.Leq, 4)),
-                                                    "а", "ов")))),
-    (([Var("dx")], [0], [EExpr(BakaOp.Add, 1)],
-      BakaOp.Neq, Var("dx"), Func("math:fac", (), (999,))),
-     (BakaASM()
-       .printf("%d манул(а/ов)", Var("test_var"),))),
-  )
-  ._do(
-    (([(Var("el1"), Var("el2"))], [Func("enumerate", (), (Func("L:get_states"),))]),
-     (BakaASM()
-       .printf("%s %s", Var("el1"), Var("el2"), _bit="u16")))
-  )
-  .defun(
-    "test", ( (Var("arg1"), Type.U8, "test"),
-              (Var("arg2"), Type.U16, "тест"), ), 
-    (BakaASM()
-      .printf("test"))
-  )
-)
-
-transformer = BakaASMTransformer()
-print(transformer.transform(snippet.build()))
-#print_a(Syntax(
-#  transformer.transform(snippet.build()),
-#  "asm"
-#))
